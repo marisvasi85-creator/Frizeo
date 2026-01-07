@@ -14,14 +14,28 @@ type BarberSettings = {
   slot_duration: number;
   start_time: string;
   end_time: string;
+  working_days: number[];
+  break_enabled: boolean;
+  break_start: string | null;
+  break_end: string | null;
+};
+
+type BarberDayOverride = {
+  date: string;
+  is_working: boolean;
+  start_time: string | null;
+  end_time: string | null;
 };
 
 /* ================= COMPONENT ================= */
 export default function Home() {
-  const days = ["Luni", "Marți", "Miercuri"];
+  const barberId = "6f1365d7-b391-457c-ac89-a80a40ae08cf";
+  const salonId = "fa15fcc6-7902-4751-9882-0e620885c405";
 
+  /* ===== STATE ===== */
   const [settings, setSettings] = useState<BarberSettings | null>(null);
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [overrides, setOverrides] = useState<BarberDayOverride[]>([]);
 
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const [selectedTime, setSelectedTime] = useState<string | null>(null);
@@ -35,47 +49,64 @@ export default function Home() {
   const [success, setSuccess] = useState(false);
 
   /* ================= FETCH ================= */
-  
-  const fetchBookings = async () => {
-  const { data, error } = await supabase
-    .from("bookings")
-    .select("day, time");
-
-  if (error) {
-    console.error("Eroare fetch bookings:", error);
-    return;
-  }
-
-  setBookings((data as Booking[]) ?? []);
-};
-
-  
-  const fetchSettings = async () => {
+  const fetchSettings = async (barberId: string) => {
   const { data, error } = await supabase
     .from("barber_settings")
     .select("*")
-    .order("created_at", { ascending: false })
-    .limit(1)
+    .eq("barber_id", barberId)   // 🔴 LIPSEA
     .single();
 
-  if (error) {
-    console.error("Eroare fetch settings:", error);
+  if (error || !data) {
+    console.error("Eroare settings:", error);
     return;
   }
 
-  console.log("SETARI DIN DB:", data);
-  setSettings(data);
+  setSettings({
+    ...data,
+    working_days: Array.isArray(data.working_days)
+      ? data.working_days.map(Number)
+      : [],
+    break_enabled: data.break_enabled ?? false,
+    break_start: data.break_start ?? null,
+    break_end: data.break_end ?? null,
+  });
 };
 
 
-  useEffect(() => {
-    fetchSettings();
-    fetchBookings();
-  }, []);
 
-useEffect(() => {
-  console.log("SETTINGS DIN BOOKING:", settings);
-}, [settings]);
+  const fetchOverrides = async (barberId: string) => {
+    const today = new Date().toISOString().split("T")[0];
+    const future = new Date();
+    future.setDate(future.getDate() + 30);
+
+    const { data } = await supabase
+      .from("barber_day_overrides")
+      .select("*")
+      .eq("barber_id", barberId)
+      .gte("date", today)
+      .lte("date", future.toISOString().split("T")[0]);
+
+    setOverrides(data ?? []);
+  };
+
+  const fetchBookings = async (barberId: string) => {
+    const { data } = await supabase
+      .from("bookings")
+      .select("day, time")
+      .eq("barber_id", barberId);
+
+    setBookings(data ?? []);
+  };
+
+  useEffect(() => {
+  if (!barberId) return;
+
+  fetchSettings(barberId);
+  fetchOverrides(barberId);
+  fetchBookings(barberId);
+}, [barberId]);
+
+
 
   /* ================= HELPERS ================= */
   const toMinutes = (t: string) => {
@@ -83,22 +114,8 @@ useEffect(() => {
     return h * 60 + m;
   };
 
-  const generateTimeSlots = (
-    start: string,
-    end: string,
-    duration: number
-  ) => {
-    const slots: string[] = [];
-    let current = toMinutes(start);
-    const endMinutes = toMinutes(end);
-
-    while (current + duration <= endMinutes) {
-      const h = Math.floor(current / 60).toString().padStart(2, "0");
-      const m = (current % 60).toString().padStart(2, "0");
-      slots.push(`${h}:${m}`);
-      current += duration;
-    }
-    return slots;
+  const isPastTime = (day: string, time: string) => {
+    return new Date(`${day}T${time}`) < new Date();
   };
 
   const isBlocked = (day: string, time: string) => {
@@ -108,9 +125,63 @@ useEffect(() => {
     return bookings.some((b) => {
       if (b.day !== day) return false;
       const start = toMinutes(b.time);
-      const end = start + settings.slot_duration;
-      return current >= start && current < end;
+      return current >= start && current < start + settings.slot_duration;
     });
+  };
+
+  const getDaySchedule = (date: string) => {
+    if (!settings) return null;
+
+    const override = overrides.find((o) => o.date === date);
+    if (override) {
+      if (!override.is_working) return null;
+      return {
+        start: override.start_time ?? settings.start_time,
+        end: override.end_time ?? settings.end_time,
+      };
+    }
+
+    const dayOfWeek = new Date(date).getDay();
+    if (!settings.working_days.includes(dayOfWeek)) return null;
+
+    return {
+      start: settings.start_time,
+      end: settings.end_time,
+    };
+  };
+
+  const generateDays = (count = 14) => {
+    const days = [];
+    const today = new Date();
+
+    for (let i = 0; i < count; i++) {
+      const d = new Date(today);
+      d.setDate(today.getDate() + i);
+      days.push({
+        value: d.toISOString().split("T")[0],
+        label: d.toLocaleDateString("ro-RO", {
+          weekday: "long",
+          day: "numeric",
+          month: "short",
+        }),
+      });
+    }
+    return days;
+  };
+
+  const generateTimeSlots = (start: string, end: string, duration: number) => {
+    const slots: string[] = [];
+    let current = toMinutes(start);
+    const endMin = toMinutes(end);
+
+    while (current + duration <= endMin) {
+      const h = Math.floor(current / 60).toString().padStart(2, "0");
+      const m = (current % 60).toString().padStart(2, "0");
+      slots.push(`${h}:${m}`);
+      current += duration;
+    }
+
+    return slots;
   };
 
   const isValidPhoneRO = (phone: string) =>
@@ -118,10 +189,10 @@ useEffect(() => {
 
   /* ================= SUBMIT ================= */
   const handleSubmit = async () => {
-    if (!selectedDay || !selectedTime || !settings) return;
+    if (!settings || !selectedDay || !selectedTime) return;
 
     if (name.trim().length < 2) {
-      setError("Numele trebuie să aibă minim 2 caractere");
+      setError("Nume prea scurt");
       return;
     }
 
@@ -133,23 +204,25 @@ useEffect(() => {
     setLoading(true);
     setError(null);
 
-    const { error } = await supabase.from("bookings").insert({
-      day: selectedDay,
-      time: selectedTime,
-      duration: settings.slot_duration,
-      name,
-      phone,
+    const { data, error } = await supabase.rpc("book_slot_atomic", {
+      p_day: selectedDay,
+      p_time: selectedTime,
+      p_duration: settings.slot_duration,
+      p_name: name,
+      p_phone: phone,
+      p_barber_id: barberId,
+      p_salon_id: salonId,
     });
 
     setLoading(false);
 
-    if (error) {
-      setError("Eroare la salvare");
+    if (error || !data) {
+      setError("⛔ Slot ocupat între timp");
       return;
     }
 
     setSuccess(true);
-    fetchBookings();
+    fetchBookings(barberId);
 
     setTimeout(() => {
       setShowForm(false);
@@ -161,142 +234,123 @@ useEffect(() => {
     }, 2000);
   };
 
+  /* ================= UI ================= */
+  useEffect(() => {
+  console.log("SETTINGS:", settings);
+}, [settings]);
+
+  const days = generateDays();
   const timeSlots =
-    settings
-      ? generateTimeSlots(
-          settings.start_time,
-          settings.end_time,
-          settings.slot_duration
-        )
+    selectedDay && settings
+      ? (() => {
+          const schedule = getDaySchedule(selectedDay);
+          if (!schedule) return [];
+          return generateTimeSlots(
+            schedule.start,
+            schedule.end,
+            settings.slot_duration
+          );
+        })()
       : [];
 
-  /* ================= UI ================= */
   return (
-    <main style={{ minHeight: "100vh", background: "#f5f5f5" }}>
-      <header style={headerStyle}>Frizeo</header>
+    <main style={{ padding: 40 }}>
+      <h1>Programează-te</h1>
+
+      {days.map((d) => {
+  // ⛔ NU decidem nimic dacă settings nu sunt încă încărcate
+  if (!settings) {
+    return (
+      <div
+        key={d.value}
+        style={{
+          ...styles.box(false),
+          opacity: 0.4,
+          pointerEvents: "none",
+        }}
+      >
+        {d.label}
+      </div>
+    );
+  }
+
+  // ✅ settings există → putem calcula corect
+  const schedule = getDaySchedule(d.value);
+  const disabled = schedule === null;
+
+  return (
+    <div
+      key={d.value}
+      onClick={() => {
+        if (disabled) return;
+        setSelectedDay(d.value);
+        setSelectedTime(null);
+      }}
+      style={{
+        ...styles.box(selectedDay === d.value),
+        opacity: disabled ? 0.4 : 1,
+        pointerEvents: disabled ? "none" : "auto",
+      }}
+    >
+      {d.label} {disabled && "— Închis"}
+    </div>
+  );
+})}
 
 
-      {settings && (
-        <p style={{ padding: 20 }}>
-          Durată setată de frizer: <b>{settings.slot_duration} min</b>
-        </p>
-      )}
-
-      <section style={{ padding: 40 }}>
-        <h1>Programează-te rapid</h1>
-
-        <div style={cardStyle}>
-          {/* ZIUA */}
-          <div>
-            <h3>Ziua</h3>
-            {days.map((day) => (
-              <div
-                key={day}
-                onClick={() => setSelectedDay(day)}
-                style={box(selectedDay === day)}
-              >
-                {day}
-              </div>
-            ))}
-          </div>
-
-          {/* ORA */}
-          <div>
-            <h3>Ora</h3>
-            {timeSlots.map((time) => {
-              const blocked = selectedDay
-                ? isBlocked(selectedDay, time)
-                : false;
-
-              return (
-                <div
-                  key={time}
-                  onClick={() => !blocked && setSelectedTime(time)}
-                  style={{
-                    ...box(selectedTime === time),
-                    opacity: blocked ? 0.4 : 1,
-                    pointerEvents: blocked ? "none" : "auto",
-                  }}
-                >
-                  {time} {blocked ? "⛔" : ""}
-                </div>
-              );
-            })}
-          </div>
-
-          <button
-            onClick={() => setShowForm(true)}
-            disabled={!selectedDay || !selectedTime}
-            style={primaryButton(!selectedDay || !selectedTime)}
-          >
-            Continuă
-          </button>
-
-          {showForm && (
-            <div>
-              <input
-                className="frizeo-input"
-                placeholder="Nume"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-              />
-              <input
-                className="frizeo-input"
-                placeholder="Telefon"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-              />
-              <button
-                onClick={handleSubmit}
-                disabled={loading}
-                style={primaryButton(loading)}
-              >
-                {loading ? "Se salvează..." : "Confirmă programarea"}
-              </button>
-
-              {error && <p style={{ color: "red" }}>{error}</p>}
-              {success && <p style={{ color: "green" }}>✅ Confirmat</p>}
+      {selectedDay &&
+        timeSlots.map((t) => {
+          const blocked = isBlocked(selectedDay, t) || isPastTime(selectedDay, t);
+          return (
+            <div
+              key={t}
+              onClick={() => !blocked && setSelectedTime(t)}
+              style={{
+                padding: 10,
+                marginBottom: 4,
+                background: selectedTime === t ? "#000" : "#ddd",
+                color: selectedTime === t ? "#fff" : "#000",
+                opacity: blocked ? 0.4 : 1,
+                cursor: blocked ? "not-allowed" : "pointer",
+              }}
+            >
+              {t} {blocked && "⛔"}
             </div>
-          )}
-        </div>
-      </section>
+          );
+        })}
+
+      <button
+        disabled={!selectedDay || !selectedTime}
+        onClick={() => setShowForm(true)}
+      >
+        Continuă
+      </button>
+
+      {showForm && (
+        <>
+          <input placeholder="Nume" value={name} onChange={(e) => setName(e.target.value)} />
+          <input placeholder="Telefon" value={phone} onChange={(e) => setPhone(e.target.value)} />
+          <button onClick={handleSubmit}>
+            {loading ? "Se salvează..." : "Confirmă"}
+          </button>
+          {error && <p>{error}</p>}
+          {success && <p>✅ Programare confirmată</p>}
+        </>
+      )}
     </main>
   );
 }
+import type { CSSProperties } from "react";
 
-/* ================= STYLES ================= */
-const headerStyle = {
-  padding: "20px 40px",
-  fontSize: 20,
-  fontWeight: "bold",
-  background: "#111",
-  color: "#fff",
+const styles = {
+  box: (active: boolean): CSSProperties => ({
+    padding: 12,
+    marginBottom: 6,
+    borderRadius: 8,
+    background: active ? "#111" : "#eee",
+    color: active ? "#fff" : "#000",
+    cursor: "pointer",
+    userSelect: "none", // ✅ acum e tipat corect
+  }),
 };
 
-const cardStyle = {
-  maxWidth: 600,
-  background: "#fff",
-  padding: 20,
-  borderRadius: 12,
-  display: "grid",
-  gap: 20,
-};
-
-const box = (active: boolean) => ({
-  padding: "12px",
-  borderRadius: 8,
-  background: active ? "#111" : "#eee",
-  color: active ? "#fff" : "#000",
-  cursor: "pointer",
-});
-
-const primaryButton = (disabled = false) => ({
-  width: "100%",
-  padding: "14px",
-  borderRadius: 10,
-  border: "none",
-  background: disabled ? "#999" : "#000",
-  color: "#fff",
-  fontSize: 16,
-  cursor: disabled ? "not-allowed" : "pointer",
-});
