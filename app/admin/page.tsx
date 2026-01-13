@@ -1,7 +1,7 @@
 "use client";
 
-import WeeklySchedule from "./components/WeeklySchedule";
-import CalendarOverrides from "./components/CalendarOverrides";
+import WeeklySchedule from "../dashboard/event/[eventId]/components/WeeklyScheduleEditor";
+import CalendarOverrides from "../dashboard/event/[eventId]/components/CalendarOverrides";
 
 export default function AdminPage() {
   return (
@@ -9,7 +9,7 @@ export default function AdminPage() {
       <h1>Admin – Program Frizer</h1>
 
       {/* Program standard */}
-      <WeeklySchedule />
+      
 
       <hr style={{ margin: "40px 0" }} />
 

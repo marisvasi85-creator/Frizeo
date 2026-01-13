@@ -1,17 +1,24 @@
-import BookingCalendar from "@/app/components/BookingCalendar";
+import { getWeeklyScheduleForBarber } from "@/app/lib/schedule/getWeeklyScheduleForBarber";
+import BookingSlotPicker from "./components/BookingSlotPicker";
 
-export default async function BookingPage({
-  params,
-}: {
-  params: Promise<{ barberId: string }>;
-}) {
+type PageProps = {
+  params: Promise<{
+    barberId: string;
+  }>;
+};
+
+export default async function Page({ params }: PageProps) {
   const { barberId } = await params;
 
-  return (
-    <main style={{ padding: 40 }}>
-      <h1>Programare</h1>
+  const schedule = await getWeeklyScheduleForBarber(barberId);
 
-      <BookingCalendar barberId={barberId} />
-    </main>
+  return (
+    <div style={{ padding: 24 }}>
+      <h1>Programare</h1>
+      <BookingSlotPicker
+        barberId={barberId}
+        schedule={schedule}
+      />
+    </div>
   );
 }
